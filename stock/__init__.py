@@ -6,7 +6,6 @@ from typing import List, Tuple
 from threading import Thread
 from time import sleep
 
-
 class StockManager:
     def __init__(self, productDBServiceInstance):
         self.productDBServiceInstance = productDBServiceInstance
@@ -52,20 +51,39 @@ class StockManager:
     ####################################################################################
     def isProductStockInconsistent(self, productObject: models.Product) -> Tuple[bool, List[interfaces.StockCount]]:
         productStockRecords = list()
-        for platformAPI in list(self.productDBServiceInstance.productPlatformInstances.values()):
-            stockRecord = platformAPI.getProductStockCount(productObject)
-            if stockRecord is not None:
-                productStockRecords.append(stockRecord)
-            else:
+        for platformRegistration in productObject.registered_services:
+            platformAPI = self.productDBServiceInstance.productPlatformInstances.get(platformRegistration.persistentIdentifier)
+            if platformAPI is None:
+                productDBLogger.error("A service was removed!")
                 pass
-        firstStockRecord = productStockRecords.pop(0)
-        productStockValue = firstStockRecord.value
-        for productStockRecord in productStockRecords:
-            if productStockRecord.value != productStockValue:
-                return True, productStockRecords
             else:
-                pass
+                stockRecord = platformAPI.getProductStockCount(productObject)
+                if stockRecord is not None:
+                    productStockRecords.append(stockRecord)
+                else:
+                    pass
+        if len(productStockRecords) == 0:
+            print("Empty list of stock records???!!!?!?!")
+            print(f"This is for product with SKU: {productObject.sku}")
+            print(f"This product claims to be registered on: {productObject.registered_services}")
+        else:
+            print(productStockRecords)
+            firstStockRecord = productStockRecords.pop(0)
+            print(productStockRecords)
+            productStockValue = firstStockRecord.value
+            for productStockRecord in productStockRecords:
+                if productStockRecord.value != productStockValue:
+                    return True, productStockRecords
+                else:
+                    pass
         return False, productStockRecords
+
+    def getProductStockCountFromPlatform(self, platformIdentity: str, productObject: models.Product):
+        platformAPIInstance = self.productDBServiceInstance.productPlatformInstances.get(platformIdentity)
+        if platformAPIInstance is None:
+            return None
+        else:
+            return platformAPIInstance.getProductStockCount(productObject)
 
     def _getAllPlatformStockCounts(self) -> List[interfaces.StockCount]:
         allCounts = list()
@@ -157,36 +175,53 @@ class StockManager:
         return sortedCollectedChanges
 
     def processPlatformStockChanges(self) -> None:
+        # Get all changes
         changes: List[interfaces.ReceivedPlatformStockChange] = self.getAllLatestChanges()
+
         for change in changes:
+            # Get the product registration for the product referred to in this change.
             productReg: models.Product = models.Product.objects(sku=change.productSKU).first()
+
+            # If change is for a product that hasn't been databased...
+            # We need to ignore the change, and wait for the new product to be picked up in a stock count.
+            # TODO: Figure this shit out.
             if productReg is None:
-                productReg = models.Product(sku=change.productSKU)
-                productReg.save()
-                productDBLogger.info(f"Product Registered, SKU: {productReg.sku}")
-            newStockTransaction: models.StockTransaction = models.StockTransaction(product=productReg, timeOccurred=change.timeOccurred, state="pending")
-            newStockActions: List[models.StockAction] = list()
-            originPlatformReg = models.ProductPlatform.objects(persistentIdentifier=change.platformIdentity).first()
-            platformReg: models.ProductPlatform
-            for platformReg in models.ProductPlatform.objects().all():
-                if platformReg == originPlatformReg:
-                    pass
-                else:
-                    newStockAction: models.StockAction = models.StockAction(
-                        transaction=newStockTransaction,
-                        originPlatformChangeID=change.platformChangeID,
-                        state="pending",
-                        action=change.action,
-                        value=change.value,
-                        origin=originPlatformReg,
-                        target=platformReg
-                    )
-                    newStockActions.append(newStockAction)
-            newStockTransaction.save()
-            for stockAction in newStockActions:
-                stockAction.save()
-            newStockTransaction.unlock()
-            newStockTransaction.save()
+                pass
+            else:
+                # Create a new stockTransaction for this product.
+                newStockTransaction: models.StockTransaction = models.StockTransaction(product=productReg, timeOccurred=change.timeOccurred, state="pending")
+
+                # Start building a list of actions to bind to this transaction.
+                newStockActions: List[models.StockAction] = list()
+
+                # Save the origin platform's registration.
+                originPlatformReg = models.ProductPlatform.objects(persistentIdentifier=change.platformIdentity).first()
+
+                # Get the platform registrations for which the product exists.
+                platformReg: models.ProductPlatform
+                for platformReg in productReg.registered_services:
+                    # If platform where action is being generated is the origin, don't generate an action.
+                    # otherwise, do generate an action, and add it to the list of actions to bind.
+                    if platformReg == originPlatformReg:
+                        pass
+                    else:
+                        newStockAction: models.StockAction = models.StockAction(
+                            transaction=newStockTransaction,
+                            originPlatformChangeID=change.platformChangeID,
+                            state="pending",
+                            action=change.action,
+                            value=change.value,
+                            origin=originPlatformReg,
+                            target=platformReg
+                        )
+                        newStockActions.append(newStockAction)
+
+                # Save and undo locks on products.
+                newStockTransaction.save()
+                for stockAction in newStockActions:
+                    stockAction.save()
+                newStockTransaction.unlock()
+                newStockTransaction.save()
 
     ##################################################################################
     @staticmethod

@@ -1,13 +1,16 @@
 from ..baseAPI import BasePlatformAPI
 from ... import productDBLogger
+from ...decimalHandling import dround
 from ...models import Product
+from ...stock.models import StockRecord
 from ...stock.interfaces import ReceivedPlatformStockChange, SentPlatformStockChange, StockCount
 from square.client import Client
 import datetime
 import rfc3339  # for date object -> date string
 import iso8601  # for date string -> date object
-from typing import Union
+from typing import Union, List
 from uuid import uuid4
+from decimal import Decimal
 
 
 class FailedRequest(BaseException):
@@ -24,7 +27,7 @@ def get_date_string(date_object):
 
 class SquareAPI(BasePlatformAPI):
     persistent_identifier = "square"
-    webhook_enabled = True
+    webhook_enabled = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -40,38 +43,62 @@ class SquareAPI(BasePlatformAPI):
     def webhook(self):
         return "Recieved"
 
+    # Get the latest changes, and wipe the list.
     def getLatestChanges(self):
         self._fetchLatestChanges()
         oldChangeQueue = self.changeQueue.copy()
         self.changeQueue = list()
         return oldChangeQueue
 
+    # Parsing the Square Stock Count JSON, converting it to a standard interface: StockCount
     def _convertSquareCountToStandard(self, squareCount: dict):
+        # Get product's catalog ID
         productCatalogID = squareCount.get("catalog_object_id")
+
+        # Check the state of the inventory reported by the count.
         countState = squareCount.get("state")
+
+        # If state is WASTE, we ignore that stock, otherwise...
         if countState == "WASTE":
             return None
         else:
+            # Fetch the productObject from the square product's catalog ID.
             productObject = self._getProductObjectFromCatalogID(productCatalogID)
+
+            # Get the value reported by square for the stock count.
+            platformValue = dround(Decimal(squareCount.get("quantity")), 6)
+
+            # If productObject doesn't exist yet...
             if productObject is None:
+                # Create a new productObject, (request the SKU, as get method will query DB, as such returns none.)
                 productObject = Product(sku=self._requestProductSKUFromCatalogID(productCatalogID))
+
+                # Create a new stock record, as product doesn't exist yet, we set the starting record value to the count reported by Square.
+                newStockRecord = StockRecord(product=productObject, value=platformValue)
+
+                # Save them.
                 productObject.save()
-                newChange = ReceivedPlatformStockChange(
-                    productSKU=productObject.sku,
-                    action="set",
-                    value=float(squareCount.get("quantity")),
-                    timeOccurred=datetime.datetime.now(),
-                    platformChangeID=f"square-consistency-count-{uuid4()}",
-                    platformIdentity=self.persistent_identifier
-                )
-                self._addChangeToQueue(newChange)
+                newStockRecord.save()
+
+                # Register that product exists on Square... (product has to be saved)
+                productObject.register_service(self.persistent_identifier)
+
+            # If product is not registered as existing on Square, but the product clearly does as we just recieved a count...
+            # register it!
+            if not productObject.is_registered_on_service(self.persistent_identifier):
+                productObject.register_service(self.persistent_identifier)
+                productObject.save()
+
+            # Return standard stock counts.
             return StockCount(
                 product=productObject,
-                value=float(squareCount.get("quantity")),
+                value=platformValue,
                 platformIdentity=self.persistent_identifier
             )
 
-    def getAllStockCounts(self):
+    # Get all the stock counts available on the platform.
+    #   | Converts them to standard again.
+    def getAllStockCounts(self) -> List[StockCount]:
         squareCountList = self._bulkStockCount()
         countList = list()
         for squareCount in squareCountList:
@@ -82,19 +109,30 @@ class SquareAPI(BasePlatformAPI):
                 pass
         return countList
 
+    # Fetches Stock Count for a Specific Product.
     def getProductStockCount(self, productObject: Product) -> Union[StockCount, None]:
         productCatalogID = self._getCatalogIDFromProductSKU(productObject.sku)
-        squareResponse = self.APIClient.inventory.retrieve_inventory_count(catalog_object_id=productCatalogID, location_ids=[self.locationID])
-        squareCountList = squareResponse.body.get("counts")
-        if squareCountList is None:
+        # TODO: Vet this change
+        if productCatalogID is None:
+            print(productObject.sku)
             return None
-        for squareCount in squareCountList:
-            convertedStockCount = self._convertSquareCountToStandard(squareCount)
-            if convertedStockCount is not None:
-                return convertedStockCount
-            else:
-                pass
-        return None
+
+        squareResponse = self.APIClient.inventory.retrieve_inventory_count(catalog_object_id=productCatalogID, location_ids=[self.locationID])
+        if squareResponse.is_success():
+            squareCountList = squareResponse.body.get("counts")
+            if squareCountList is None:
+                return None
+            for squareCount in squareCountList:
+                convertedStockCount = self._convertSquareCountToStandard(squareCount)
+                if convertedStockCount is not None:
+                    return convertedStockCount
+                else:
+                    pass
+            return None
+        else:
+            # BUG: Loops infinitely if fails.
+            productDBLogger.warn(f"Square was unable to get inventory count of product: {productObject.sku}")
+            return None
 
     def _bulkStockCount(self):
         cursor = None
@@ -138,8 +176,12 @@ class SquareAPI(BasePlatformAPI):
     def _changeStock(self, stockChange: SentPlatformStockChange):
         squareProductID = self._getCatalogIDFromProductSKU(stockChange.product.sku)
         if squareProductID is None:
-            productDBLogger.warn(f"Failed to complete square change as product not registered on square! Change: {stockChange}")
-            return False
+            productDBLogger.warn("Square was sent a change for a non-existent Product ~ Un registering WC from product's services.")
+            productDBLogger.critical("Exceptions need to be implemented. This will be a large refactor but is very important.")
+            productDBLogger.critical("I mean heck! This function just returned True!!!! This means my system thinks the change occurred sucessfully!")
+            stockChange.product.unregister_service(self.persistent_identifier)
+            return True
+
         if stockChange.value < 0:
             fromState, toState = "IN_STOCK", "NONE"
         elif stockChange.value > 0:
@@ -175,8 +217,12 @@ class SquareAPI(BasePlatformAPI):
     def _setStock(self, stockChange: SentPlatformStockChange):
         squareProductID = self._getCatalogIDFromProductSKU(stockChange.product.sku)
         if squareProductID is None:
-            productDBLogger.warn(f"Failed to complete square change as product not registered on square! Change: {stockChange}")
-            return False
+            productDBLogger.warn("Square was sent a change for a non-existent Product ~ Un registering WC from product's services.")
+            productDBLogger.critical("Exceptions need to be implemented. This will be a large refactor but is very important.")
+            productDBLogger.critical("I mean heck! This function just returned True!!!! This means my system thinks the change occurred sucessfully!")
+            stockChange.product.unregister_service(self.persistent_identifier)
+            return True
+
         changeID = str(uuid4())
         requestBody = {
             "idempotency_key": str(uuid4()),
@@ -230,9 +276,9 @@ class SquareAPI(BasePlatformAPI):
                 return None
 
             if quantityPositive:
-                changeValue = adjustmentJSON.get("quantity")
+                changeValue = dround(Decimal(adjustmentJSON.get("quantity")), 6)
             else:
-                changeValue = 0 - float(adjustmentJSON.get("quantity"))
+                changeValue = 0 - dround(Decimal(adjustmentJSON.get("quantity")), 6)
             changeProductSKU = self._getProductSKUFromCatalogID(adjustmentJSON.get("catalog_object_id"))
         elif squareChangeJSON.get("type") == "PHYSICAL_COUNT":
             physicalCountJSON = squareChangeJSON.get("physical_count")

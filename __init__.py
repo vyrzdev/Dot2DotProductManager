@@ -27,13 +27,14 @@ class ProductDatabase(BaseService):
         self.productPlatformInstances = dict()
         self.redisClient = redis.Redis()
         productDBLogger.info("Redis Connection Successful")
-        productDBLogger.info("Loading Product Platforms")
-        # self.loadProductPlatform(SystemAPI)
-        # self.loadProductPlatform(SquareAPI)
-        self.loadProductPlatform(WooCommerceAPI)
         productDBLogger.info("Initialising stock management service")
         self.stockManager = stock.StockManager(self)
-        # self.stockManager.startSync()
+
+        productDBLogger.info("Loading Product Platforms")
+        self.loadProductPlatform(SystemAPI)
+        self.loadProductPlatform(SquareAPI)
+        self.loadProductPlatform(WooCommerceAPI)
+        self.stockManager.startSync()
         productDBLogger.info("ProductDB Started!")
 
     @classmethod
@@ -42,6 +43,8 @@ class ProductDatabase(BaseService):
         cls.Product = models.Product
 
     def loadProductPlatform(self, platformClass):
+        # Get the platforms databased registration.
+        # TODO: Figure out whats happening with registrations.
         platformRegistration = stock.models.ProductPlatform.objects(persistentIdentifier=platformClass.persistent_identifier).first()
         if platformRegistration is None:
             platformRegistration = stock.models.ProductPlatform(persistentIdentifier=platformClass.persistent_identifier)
@@ -56,6 +59,8 @@ class ProductDatabase(BaseService):
             webhookFunction = newPlatformInstance.webhook
             self.flaskServiceInstance.add_url_rule(webhookURL, view_func=webhookFunction, methods=["GET", "POST"])
             productDBLogger.info(f"Product Platform registered a webhook endpoint: {self.url_prefix}{webhookURL}")
+
+        newPlatformInstance.register_stock_manager_instance(self.stockManager)
 
     def loadEndpoints(self):
         pass

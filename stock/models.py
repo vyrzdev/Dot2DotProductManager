@@ -1,11 +1,12 @@
 import mongoengine
 from .interfaces import SentPlatformStockChange
+from decimal import Decimal
 from ..models import Product, ProductPlatform
 
 
 class StockRecord(mongoengine.Document):
     product = mongoengine.ReferenceField(Product, required=True)
-    value = mongoengine.DecimalField(required=True, default=float(0))
+    value = mongoengine.DecimalField(required=True, default=Decimal(0))
 
 
 class StockTransaction(mongoengine.Document):
@@ -54,7 +55,7 @@ class ConsistencyConflict(mongoengine.Document):
     def counts(self):
         return ConsistencyStockCount.objects(conflict=self).all()
 
-    def resolve(self, resolvedValue: float):
+    def resolve(self, resolvedValue: Decimal):
         self.state = "resolved"
         self.product.consistency_lock = False
         pendingTransactions = StockTransaction()

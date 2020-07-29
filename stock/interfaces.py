@@ -1,13 +1,14 @@
 from dataclasses import dataclass
 from datetime import datetime
 from ..models import Product, ProductPlatform
+from decimal import Decimal
 
 
 @dataclass
 class ReceivedPlatformStockChange:
     productSKU: str
     action: str  # set, change
-    value: float
+    value: Decimal
     timeOccurred: datetime
     platformChangeID: str
     platformIdentity: str
@@ -17,7 +18,7 @@ class ReceivedPlatformStockChange:
 class SentPlatformStockChange:
     product: Product
     action: str  # set, change
-    value: float
+    value: Decimal
     timeInitiated: datetime
     platform: ProductPlatform
 
@@ -25,5 +26,5 @@ class SentPlatformStockChange:
 @dataclass
 class StockCount:
     product: Product
-    value: float
+    value: Decimal
     platformIdentity: str

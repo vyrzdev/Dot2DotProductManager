@@ -1,5 +1,7 @@
 from woocommerce import API
 from ...models import Product
+from decimal import Decimal
+from ...decimalHandling import dround
 
 
 class WooCommerceProduct:
@@ -9,7 +11,7 @@ class WooCommerceProduct:
         self.sku = raw.get("sku")
         self.manage_stock = raw.get("manage_stock")
         if self.manage_stock:
-            self.stock_quantity = float(raw.get("stock_quantity"))
+            self.stock_quantity = dround(Decimal(raw.get("stock_quantity")), 6)
         else:
             self.stock_quantity = None
         if self.type == "simple":
@@ -22,11 +24,11 @@ class WooCommerceProduct:
     # Constructors
     @classmethod
     def fetchBySKU(cls, APIClient: API, productSKU: str):
-        responseObject = APIClient.get("products", params={{
+        responseObject = APIClient.get("products", params={
             "sku": productSKU
-        }})
+        })
         if responseObject.status_code == 200:
-            responseJSON = responseObject.json
+            responseJSON = responseObject.json()
             if len(responseJSON) < 1:
                 return None
             else:
