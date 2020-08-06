@@ -1,167 +1,48 @@
 from .. import productDBLogger
 from . import models
 from . import interfaces
+from . import consistency
 from operator import attrgetter
 from typing import List, Tuple
 from threading import Thread
 from time import sleep
 
+
 class StockManager:
     def __init__(self, productDBServiceInstance):
-        self.productDBServiceInstance = productDBServiceInstance
-        self.syncStock = False
         self._running = False
-        self.secondOpinionConsistencyStore = list()
+        self.syncStock = False
+        self.productDBServiceInstance = productDBServiceInstance
+        self.consistencyCheckManager = consistency.ConsistencyCheckManager(self)
         self.stockProcessorThreadInstance = Thread(target=self.stockProcessorThreadMethod, args=(), daemon=True)
 
-    def startSync(self):
+    def start(self):
         self.syncStock = True
+        self.consistencyCheckManager.start()
+        productDBLogger.info("Consistency Checking Thread Started!")
         self.stockProcessorThreadInstance.start()
+        productDBLogger.info("Stock Processor Started!")
 
-    def stopSync(self):
+    def stop(self):
         self.syncStock = False
+        while self.stockProcessorThreadInstance.is_alive() or self._running:
+            pass
 
     def stockProcessorThreadMethod(self):
-        sleep(10)
-        productDBLogger.info("Stock Processor Started!")
-        # Initial Stock Consistency Assurance (Locks products that are inconsistent)
-        self.runConsistencyCheck()
-        productDBLogger.info("Initial Consistency Check Complete!")
+        sleep(5)
+
         productDBLogger.info("Stock Processing Loop Began Safely!")
         while self.syncStock:
             self._running = True
+            productDBLogger.debug("Processing received stock changes")
             self.processPlatformStockChanges()
+            productDBLogger.debug("Processing pending stock transactions")
             pendingStockTransactions = self.getPendingStockTransactions()
             for pendingStockTransaction in pendingStockTransactions:
                 self.processStockTransaction(pendingStockTransaction)
-            self.runConsistencyCheck()
-
-    def runConsistencyCheck(self):
-        stillInconsistentRecords = self.getStillInconsistentRecordsFromSecondOpinionStore()
-        self._generateConflictCases(stillInconsistentRecords)
-        stockCounts = self._getAllPlatformStockCounts()
-        inconsistentStockCountRecords = self._findInconsistentStockCounts(stockCounts)
-        if len(inconsistentStockCountRecords) > 0:
-            consistent = False
-        else:
-            consistent = True
-        self.addRecordsForSecondOpinion(inconsistentStockCountRecords)
-        return consistent
-
-    ####################################################################################
-    def isProductStockInconsistent(self, productObject: models.Product) -> Tuple[bool, List[interfaces.StockCount]]:
-        productStockRecords = list()
-        for platformRegistration in productObject.registered_services:
-            platformAPI = self.productDBServiceInstance.productPlatformInstances.get(platformRegistration.persistentIdentifier)
-            if platformAPI is None:
-                productDBLogger.error("A service was removed!")
-                pass
-            else:
-                stockRecord = platformAPI.getProductStockCount(productObject)
-                if stockRecord is not None:
-                    productStockRecords.append(stockRecord)
-                else:
-                    pass
-        if len(productStockRecords) == 0:
-            print("Empty list of stock records???!!!?!?!")
-            print(f"This is for product with SKU: {productObject.sku}")
-            print(f"This product claims to be registered on: {productObject.registered_services}")
-        else:
-            print(productStockRecords)
-            firstStockRecord = productStockRecords.pop(0)
-            print(productStockRecords)
-            productStockValue = firstStockRecord.value
-            for productStockRecord in productStockRecords:
-                if productStockRecord.value != productStockValue:
-                    return True, productStockRecords
-                else:
-                    pass
-        return False, productStockRecords
-
-    def getProductStockCountFromPlatform(self, platformIdentity: str, productObject: models.Product):
-        platformAPIInstance = self.productDBServiceInstance.productPlatformInstances.get(platformIdentity)
-        if platformAPIInstance is None:
-            return None
-        else:
-            return platformAPIInstance.getProductStockCount(productObject)
-
-    def _getAllPlatformStockCounts(self) -> List[interfaces.StockCount]:
-        allCounts = list()
-        for platformInstance in list(self.productDBServiceInstance.productPlatformInstances.values()):
-            allCounts = allCounts + platformInstance.getAllStockCounts()
-        return allCounts
-
-    @staticmethod
-    def _findInconsistentStockCounts(stockCountList: List[interfaces.StockCount]) -> List[dict]:
-        stockCountDict = dict()
-        inconsistentProducts = list()
-        for stockCount in stockCountList:
-            if stockCount.product.consistency_lock:
-                pass
-            else:
-                sortedRecord = stockCountDict.get(stockCount.product)
-                if sortedRecord is None:
-                    stockCountDict[stockCount.product] = {
-                        "value": stockCount.value,
-                        "inconsistent": False,
-                        "product": stockCount.product,
-                        "counts": [
-                            stockCount
-                        ]
-                    }
-                else:
-                    if sortedRecord.get("value") != stockCount.value:
-                        stockCountDict[stockCount.product]["inconsistent"] = True
-                        inconsistentProducts.append(stockCount.product)
-                    else:
-                        pass
-                    stockCountDict[stockCount.product]["counts"].append(stockCount)
-        inconsistentStockRecords = list()
-        for product in inconsistentProducts:
-            inconsistentStockRecords.append(stockCountDict.get(product))
-        return inconsistentStockRecords
-
-    def addRecordsForSecondOpinion(self, inconsistentStockRecords: List[dict]) -> None:
-        for inconsistentStockRecord in inconsistentStockRecords:
-            self.secondOpinionConsistencyStore.append(inconsistentStockRecord)
-
-    def getStillInconsistentRecordsFromSecondOpinionStore(self) -> List[dict]:
-        stillInconsistentRecords = list()
-        for inconsistentRecord in self.secondOpinionConsistencyStore:
-            inconsistent, stockCounts = self.isProductStockInconsistent(inconsistentRecord.get("product"))
-            if inconsistent:
-                stillInconsistentRecords.append({
-                    "product": inconsistentRecord.get("product"),
-                    "inconsistent": True,
-                    "counts": stockCounts
-                })
-            else:
-                pass
-        self.secondOpinionConsistencyStore = list()
-        return stillInconsistentRecords
-
-    @staticmethod
-    def _generateConflictCases(inconsistentStockRecords: List[dict]) -> None:
-        for inconsistentStockRecord in inconsistentStockRecords:
-            toSave = list()
-            inconsistentProduct = inconsistentStockRecord.get("product")
-            if inconsistentProduct.consistency_lock:
-                pass
-            else:
-                inconsistentProduct.consistency_lock = True
-                toSave.append(inconsistentProduct)
-                newConsistencyCase = models.ConsistencyConflict(product=inconsistentProduct)
-                toSave.append(newConsistencyCase)
-                count: interfaces.StockCount
-                for count in inconsistentStockRecord.get("counts"):
-                    consistencyStockCount = models.ConsistencyStockCount(
-                        platform=models.ProductPlatform.objects(persistentIdentifier=count.platformIdentity).first(),
-                        conflict=newConsistencyCase,
-                        value=count.value
-                    )
-                    toSave.append(consistencyStockCount)
-                [obj.save() for obj in toSave]
-                productDBLogger.warn(f"Conflict Case!!! Stock is inconsistent for productSKU: {inconsistentProduct.sku}")
+            sleep(1)
+        self.consistencyCheckManager.stop()
+        self._running = False
 
     ####################################################################################
     def getServiceChanges(self, service):
@@ -249,7 +130,7 @@ class StockManager:
             for stockAction in stockTransactionInstance.actions(state="pending"):
                 applied = self.sendPlatformStockChange(stockAction.sentChangeFormat())
                 if applied:
-                    productDBLogger.debug(f"Applied Stock Transaction: change:{stockAction.sentChangeFormat()}")
+                    productDBLogger.debug(f"Applied Stock Action: change:{stockAction.sentChangeFormat()}")
                     stockAction.state = "applied"
                     stockAction.save()
                 else:
@@ -265,6 +146,7 @@ class StockManager:
                     pass
             if transactionApplied:
                 stockTransactionInstance.state = "applied"
+                productDBLogger.debug(f"Stock Transaction Applied!")
                 stockTransactionInstance.unlock()
                 stockTransactionInstance.save()
             else:

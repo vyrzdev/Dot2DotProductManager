@@ -34,7 +34,7 @@ class ProductDatabase(BaseService):
         self.loadProductPlatform(SystemAPI)
         self.loadProductPlatform(SquareAPI)
         self.loadProductPlatform(WooCommerceAPI)
-        self.stockManager.startSync()
+        self.stockManager.start()
         productDBLogger.info("ProductDB Started!")
 
     @classmethod

@@ -1,6 +1,7 @@
 import mongoengine
 from .interfaces import SentPlatformStockChange
 from decimal import Decimal
+from datetime import datetime
 from ..models import Product, ProductPlatform
 
 
@@ -47,23 +48,26 @@ class StockAction(mongoengine.Document):
         )
 
 
-class ConsistencyConflict(mongoengine.Document):
+class InconsistencyRecord(mongoengine.Document):
     product = mongoengine.ReferenceField(Product, required=True)
-    state = mongoengine.StringField(required=True, default="pending") # pending, resolved
+    time = mongoengine.DateTimeField(required=True, default=datetime.now)
 
     @property
     def counts(self):
-        return ConsistencyStockCount.objects(conflict=self).all()
+        return InconsistencyStockCount.objects(record=self).all()
 
-    def resolve(self, resolvedValue: Decimal):
-        self.state = "resolved"
-        self.product.consistency_lock = False
-        pendingTransactions = StockTransaction()
-        self.save()
+    def safeDelete(self):
+        InconsistencyStockCount.objects(record=self).delete()
+        InconsistencyCase.objects(record=self).delete()
+        self.delete()
 
 
-class ConsistencyStockCount(mongoengine.Document):
+class InconsistencyStockCount(mongoengine.Document):
+    record = mongoengine.ReferenceField(InconsistencyRecord, required=True)
     platform = mongoengine.ReferenceField(ProductPlatform, required=True)
-    conflict = mongoengine.ReferenceField(ConsistencyConflict, required=True)
     value = mongoengine.DecimalField(required=True)
 
+
+class InconsistencyCase(mongoengine.Document):
+    record = mongoengine.ReferenceField(InconsistencyRecord, required=True)
+    status = mongoengine.StringField(required=True, default="unresolved")
