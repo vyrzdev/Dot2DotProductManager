@@ -114,7 +114,6 @@ class SquareAPI(BasePlatformAPI):
         productCatalogID = self._getCatalogIDFromProductSKU(productObject.sku)
         # TODO: Vet this change
         if productCatalogID is None:
-            print(productObject.sku)
             return None
 
         squareResponse = self.APIClient.inventory.retrieve_inventory_count(catalog_object_id=productCatalogID, location_ids=[self.locationID])
@@ -216,8 +215,9 @@ class SquareAPI(BasePlatformAPI):
 
     def _setStock(self, stockChange: SentPlatformStockChange):
         squareProductID = self._getCatalogIDFromProductSKU(stockChange.product.sku)
+        print(squareProductID)
         if squareProductID is None:
-            productDBLogger.warn("Square was sent a change for a non-existent Product ~ Un registering WC from product's services.")
+            productDBLogger.warn("Square was sent a change for a non-existent Product ~ Un registering Square from product's services.")
             productDBLogger.critical("Exceptions need to be implemented. This will be a large refactor but is very important.")
             productDBLogger.critical("I mean heck! This function just returned True!!!! This means my system thinks the change occurred sucessfully!")
             stockChange.product.unregister_service(self.persistent_identifier)
@@ -241,10 +241,12 @@ class SquareAPI(BasePlatformAPI):
             ]
         }
         responseJSON = self.APIClient.inventory.batch_change_inventory(requestBody)
-        if responseJSON.body.get("errors") is not None:
+        if responseJSON.body.get("errors") is None:
             self.blacklistStockChange(changeID)
             return True
         else:
+            print(responseJSON.body)
+            print(responseJSON.body.get("errors"))
             return False
 
     def _convertSquareChangeToStandard(self, squareChangeJSON: dict) -> Union[None, ReceivedPlatformStockChange]:
@@ -341,6 +343,7 @@ class SquareAPI(BasePlatformAPI):
             productJSON = responseJSON.body.get("objects")[0]
             return productJSON.get("id")
         else:
+            print(responseJSON.body)
             productDBLogger.warn(f"Failed to get SquareID for product: {productSKU}")
             return None
 
