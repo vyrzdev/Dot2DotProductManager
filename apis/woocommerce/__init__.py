@@ -12,6 +12,7 @@ from uuid import uuid4
 from flask import request
 import json
 from decimal import Decimal
+from requests.exceptions import ReadTimeout
 
 
 def pp_json(json_thing, sort=True, indents=4):
@@ -43,11 +44,12 @@ class WooCommerceAPI(BasePlatformAPI):
     ###########################################
     def getAllStockCounts(self):
         wpProductDataList = self._bulkStockCount()
+
         stdCountList = list()
         count = 1
         total = len(wpProductDataList)
+        productDBLogger.info("WcAPI Converting/Parsing Simple Product Stock Counts...")
         for wpRawProductData in wpProductDataList:
-            print(f"Converting Product Data Prod# {count}/{total}")
             stdCount = self._convertProductDataIntoStockCount(wpRawProductData)
             if stdCount is not None:
                 stdCountList.append(stdCount)
@@ -61,14 +63,11 @@ class WooCommerceAPI(BasePlatformAPI):
         responseObject = self.APIClient.get("products", params={
             "sku": productSKU
         })
-        print("Attempting to fetch a product stock count")
         if responseObject.status_code == 200:
             responseJSON = responseObject.json()
             if len(responseJSON) > 0:
                 productJSON = responseJSON[0]
-                print("Request succeeded, converting said JSON.")
                 stockCount = self._convertProductDataIntoStockCount(productJSON)
-                print(stockCount)
                 return stockCount
             else:
                 print(f"Length of JSON response was below 0... product had sku:{productObject.sku}")
@@ -83,28 +82,34 @@ class WooCommerceAPI(BasePlatformAPI):
         return bulkStockCountList
 
     def _bulkSimpleStockCount(self):
+        productDBLogger.info("WcAPI Getting Simple Product Stock Counts...")
         page = 1
         finishedReading = False
         rawStockCountList = list()
         failedAttempts = 0
         while (not finishedReading) and (failedAttempts < 4):
-            requestResponse = self.APIClient.get("products", params={
-                "page": page,
-                "per_page": 50,
-                "type": "simple"
-            })
-            if requestResponse.status_code == 200:
-                failedAttempts = 0
-                responseJSON = requestResponse.json()
-                rawStockCountList = rawStockCountList + responseJSON
-                totalPages = int(requestResponse.headers["X-WP-TotalPages"])
-                if page >= totalPages:
-                    finishedReading = True
+            try:
+                requestResponse = self.APIClient.get("products", params={
+                    "page": page,
+                    "per_page": 50,
+                    "type": "simple"
+                })
+                if requestResponse.status_code == 200:
+                    failedAttempts = 0
+                    responseJSON = requestResponse.json()
+                    rawStockCountList = rawStockCountList + responseJSON
+                    totalPages = int(requestResponse.headers["X-WP-TotalPages"])
+                    if page >= totalPages:
+                        finishedReading = True
+                    else:
+                        finishedReading = False
+                        page = page + 1
                 else:
+                    print(requestResponse.content)
+                    failedAttempts = failedAttempts + 1
                     finishedReading = False
-                    page = page + 1
-            else:
-                print(requestResponse.content)
+            except ReadTimeout:
+                productDBLogger.warn("WcAPI Bulk Stock Count got a read timeout, retrying!")
                 failedAttempts = failedAttempts + 1
                 finishedReading = False
         if failedAttempts == 4:
@@ -112,6 +117,7 @@ class WooCommerceAPI(BasePlatformAPI):
         return rawStockCountList
 
     def _bulkVariationStockCount(self):
+        productDBLogger.info("WcAPI Fetching Variable Product Listings")
         page = 1
         finishedReading = False
         variableProductIDList = list()
@@ -129,7 +135,6 @@ class WooCommerceAPI(BasePlatformAPI):
                     variableProductID = variableProductJSON.get("id")
                     variableProductIDList.append(variableProductID)
                 totalPages = int(requestResponse.headers["X-WP-TotalPages"])
-                print(f"Fetching Products Page#: {page}/{totalPages}")
                 if page >= totalPages:
                     finishedReading = True
                 else:
@@ -142,6 +147,7 @@ class WooCommerceAPI(BasePlatformAPI):
         if failedAttempts == 4:
             productDBLogger.error("WpApi BulkStockCount Encountered 4 errors in a row in simple product fetch and was forced to quit early!!!")
 
+        productDBLogger.info("WcAPI Fetching Variation Stock Counts ")
         rawStockCountList = list()
         count = 1
         total = len(variableProductIDList)
@@ -149,7 +155,6 @@ class WooCommerceAPI(BasePlatformAPI):
             page = 1
             finishedReading = False
             failedAttempts = 0
-            print(f"Starting fetch of variable product: {count}/{total}")
             while (not finishedReading) and (failedAttempts < 4):
                 requestResponse = self.APIClient.get(f"products/{variableProductID}/variations", params={
                     "page": page,
@@ -160,7 +165,6 @@ class WooCommerceAPI(BasePlatformAPI):
                     responseJSON = requestResponse.json()
                     rawStockCountList = rawStockCountList + responseJSON
                     totalPages = int(requestResponse.headers["X-WP-TotalPages"])
-                    print(f"Page: {page}/{totalPages}")
                     if page >= totalPages:
                         page = page + 1
                         finishedReading = True
