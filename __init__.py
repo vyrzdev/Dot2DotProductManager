@@ -11,7 +11,7 @@ from . import models
 from . import stock
 from .apis.baseAPI import BasePlatformAPI
 from .apis.system import SystemAPI
-from .apis.test import TestAPI
+# from .apis.etsy import EtsyAPI
 from .apis.square import SquareAPI
 from .apis.woocommerce import WooCommerceAPI
 
@@ -34,6 +34,7 @@ class ProductDatabase(BaseService):
         self.loadProductPlatform(SystemAPI)
         self.loadProductPlatform(SquareAPI)
         self.loadProductPlatform(WooCommerceAPI)
+        # self.loadProductPlatform(EtsyAPI)
         self.stockManager.start()
         productDBLogger.info("ProductDB Started!")
 
