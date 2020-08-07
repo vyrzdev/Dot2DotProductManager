@@ -308,6 +308,7 @@ class WooCommerceAPI(BasePlatformAPI):
         if (not stockManaged) or (productSKU is None) or (productType == "variable"):
             return None
         # If passes checks...
+        productDBLogger.info(dateutil.parser.parse(productData.get("date_modified_gmt")))
         return ReceivedPlatformStockChange(
             productSKU=productSKU,
             action="set",

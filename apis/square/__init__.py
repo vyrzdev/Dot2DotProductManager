@@ -10,6 +10,7 @@ import rfc3339  # for date object -> date string
 import iso8601  # for date string -> date object
 from typing import Union, List
 from uuid import uuid4
+from flask import request
 from decimal import Decimal
 
 
@@ -21,8 +22,10 @@ def get_date_object(date_string):
     return iso8601.parse_date(date_string)
 
 
+# TODO: Figure out what the fuck
+# Dates should just go die!
 def get_date_string(date_object):
-    return rfc3339.rfc3339(date_object)
+    return rfc3339.rfc3339(date_object, utc=True, use_system_timezone=False)
 
 
 class SquareAPI(BasePlatformAPI):
@@ -38,9 +41,10 @@ class SquareAPI(BasePlatformAPI):
         self.locationID = "MA9MJNAKD1WDG"
         self.signatureKey = ""
         self.changeQueue = list()
-        self.lastInventoryRequest = datetime.datetime.now()
+        self.lastInventoryRequest = datetime.datetime.utcnow()
 
     def webhook(self):
+        print(request.data)
         return "Recieved"
 
     # Get the latest changes, and wipe the list.
@@ -71,7 +75,11 @@ class SquareAPI(BasePlatformAPI):
             # If productObject doesn't exist yet...
             if productObject is None:
                 # Create a new productObject, (request the SKU, as get method will query DB, as such returns none.)
-                productObject = Product(sku=self._requestProductSKUFromCatalogID(productCatalogID))
+                productSKU = self._requestProductSKUFromCatalogID(productCatalogID)
+                if productSKU is None:
+                    return None
+                else:
+                    productObject = Product(sku=productSKU)
 
                 # Create a new stock record, as product doesn't exist yet, we set the starting record value to the count reported by Square.
                 newStockRecord = StockRecord(product=productObject, value=platformValue)
@@ -216,6 +224,7 @@ class SquareAPI(BasePlatformAPI):
     def _setStock(self, stockChange: SentPlatformStockChange):
         squareProductID = self._getCatalogIDFromProductSKU(stockChange.product.sku)
         print(squareProductID)
+        print(stockChange.timeInitiated)
         if squareProductID is None:
             productDBLogger.warn("Square was sent a change for a non-existent Product ~ Un registering Square from product's services.")
             productDBLogger.critical("Exceptions need to be implemented. This will be a large refactor but is very important.")
@@ -240,12 +249,20 @@ class SquareAPI(BasePlatformAPI):
                 }
             ]
         }
+        print(requestBody)
         responseJSON = self.APIClient.inventory.batch_change_inventory(requestBody)
-        if responseJSON.body.get("errors") is None:
+        if responseJSON.is_success():
             self.blacklistStockChange(changeID)
+            print(responseJSON.body)
+            print(responseJSON.errors)
+            print(self.getProductStockCount(Product.objects(sku="test").first()))
             return True
         else:
             print(responseJSON.body)
+            print(responseJSON.errors)
+            print(responseJSON.text)
+            print(responseJSON.status_code)
+            print(responseJSON.reason_phrase)
             print(responseJSON.body.get("errors"))
             return False
 
@@ -298,23 +315,30 @@ class SquareAPI(BasePlatformAPI):
         else:
             productDBLogger.warn(f"Unexpected Inventory Change Type at SquareAPI, Type: {squareChangeJSON.get('type')}")
             return None
-        newChange = ReceivedPlatformStockChange(
-            action=changeAction,
-            platformChangeID=changePlatformChangeID,
-            platformIdentity=changePlatformIdentity,
-            productSKU=changeProductSKU,
-            value=changeValue,
-            timeOccurred=changeTimeOccurred
-        )
-        return newChange
+        if changeProductSKU is None:
+            return None
+        else:
+            newChange = ReceivedPlatformStockChange(
+                action=changeAction,
+                platformChangeID=changePlatformChangeID,
+                platformIdentity=changePlatformIdentity,
+                productSKU=changeProductSKU,
+                value=changeValue,
+                timeOccurred=changeTimeOccurred
+            )
+            return newChange
 
     def _requestProductSKUFromCatalogID(self, catalogID):
         responseJSON = self.APIClient.catalog.retrieve_catalog_object(catalogID)
-        if responseJSON.body.get("object").get("type") == "ITEM_VARIATION":
-            sku = responseJSON.body.get("object").get("item_variation_data").get("sku")
-            return sku
+        if responseJSON.is_success():
+            if responseJSON.body.get("object").get("type") == "ITEM_VARIATION":
+                sku = responseJSON.body.get("object").get("item_variation_data").get("sku")
+                return sku
+            else:
+                productDBLogger.warn(f"Unrecognized Catalog Object Type! : {responseJSON.get('object').get('type')} CatalogID: {catalogID}")
+                return None
         else:
-            productDBLogger.warn(f"Unrecognized Catalog Object Type! : {responseJSON.get('object').get('type')} CatalogID: {catalogID}")
+            print(responseJSON.body)
             return None
 
     def _getProductSKUFromCatalogID(self, catalogID):
@@ -367,6 +391,7 @@ class SquareAPI(BasePlatformAPI):
         finishedReading = False
         cursor = None
         updatedAfter = get_date_string(self.lastInventoryRequest - datetime.timedelta(seconds=60))
+        self.lastInventoryRequest = datetime.datetime.utcnow()
         while not finishedReading:
             requestBody = {
                 "location_ids": [self.locationID],
