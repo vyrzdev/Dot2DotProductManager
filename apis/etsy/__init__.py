@@ -4,8 +4,9 @@ from etsy2 import Etsy
 from etsy2.oauth import EtsyOAuthClient, EtsyOAuthHelper
 from ... import productDBLogger  #
 from urllib.parse import parse_qs, urlparse
+from . import models
 
-requiredPermissions = ["listings_r", "listing_w"]
+requiredPermissions = ["listings_r", "listings_w"]
 consumer_key = "l4opy054xmz7lolo6x68ot1k"
 consumer_secret = "wn1etzuu54"
 shop_id = "12703209"
@@ -39,7 +40,10 @@ class EtsyAPI(BasePlatformAPI):
             resource_owner_secret=etsyAuthSecret.value
         )
         self.EtsyClient = Etsy(etsy_oauth_client=etsyOAuthClient)
-        print(self._getListing("738914494"))
+        newEtsyListing = models.EtsyParityRecord(listingType="foo", listingID="738914494", productID="3779581207")
+        print(newEtsyListing.getRawListingProductsJSON(self.EtsyClient))
+        print(newEtsyListing.pushQuantityToEtsy(10, self.EtsyClient))
+        # print(self._getListing("738914494"))
         exit()
 
     def getAllStockCounts(self):
@@ -52,7 +56,6 @@ class EtsyAPI(BasePlatformAPI):
         limit = 100
         fetchedResourceJSONList = list()
         while not finishedReading:
-            print(f"Requesting Page: {page}")
             responseJSON = self.EtsyClient.findAllShopListingsActive(shop_id=shop_id, limit=limit, page=page)
             totalAmountOfResourcesOnEtsy = self.EtsyClient.count
             totalAmountOfResourcesFetched += len(responseJSON)
